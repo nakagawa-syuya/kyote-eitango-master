@@ -3,9 +3,9 @@
 **忘却曲線 × 個別最適化で、共通テスト英単語を効率学習するiPhoneアプリ**
 
 <p align="center">
-  <img src="screenshots/ques.png" width="200">
-  <img src="screenshots/stats.png" width="200">
-  <img src="screenshots/daily.png" width="200">
+  <img src="screenshots/ques.PNG" width="200">
+  <img src="screenshots/stats.PNG" width="200">
+  <img src="screenshots/daily.PNG" width="200">
 </p>
 
 ---
