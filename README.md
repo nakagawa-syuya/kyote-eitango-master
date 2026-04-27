@@ -147,7 +147,7 @@ questions (1667語の単語データ)
 
 - 📱 [App Store](https://apps.apple.com/jp/app/共テ英単語マスター/id6762442043) 
 - 🌐 [公式サイト](https://syncnode.jp/loopwords)
-- 📝 [開発ストーリー（note）](https://note.com/xxxx) （準備中）
+- 📝 [開発ストーリー（note）](https://note.com/xxxxx) （準備中）
 ---
 
 ## 開発者
