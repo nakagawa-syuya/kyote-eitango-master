@@ -53,6 +53,7 @@ public class ApiManager : MonoBehaviour
     {
         public bool success;
         public int user_id;
+        public string ab_group;
         public string message;
     }
 
@@ -153,7 +154,13 @@ public class ApiManager : MonoBehaviour
                 {
                     userId = res.user_id;
                     UserManager.SaveUserId(res.user_id);
-                    Debug.Log($"[API] Register成功: user_id={res.user_id}");
+
+                    // A/Bグループを保存
+                    string group = string.IsNullOrEmpty(res.ab_group) ? "A" : res.ab_group;
+                    PlayerPrefs.SetString("AbGroup", group);
+                    PlayerPrefs.Save();
+
+                    Debug.Log($"[API] Register成功: user_id={res.user_id} group={group}");
                     callback?.Invoke(true);
                 }
                 else

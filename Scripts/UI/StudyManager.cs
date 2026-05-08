@@ -57,6 +57,7 @@ public class StudyManager : MonoBehaviour
         public int reviewCount;
         public int knownCount;
         public int unknownCount;
+        public int consecutiveCorrect; // 連続正解数（不正解でリセット）
         public long lastReviewTicks;
         public long nextReviewTicks;
         public long createdTicks;
@@ -82,7 +83,7 @@ public class StudyManager : MonoBehaviour
     private const float STR_MAX   = 1.0f;
     private const float STR_DELTA = 0.20f;
     private const float K_INIT    = 0.05f;
-    private const float K_MIN     = 0.01f;
+    private const float K_MIN_BASE = 0.01f;  // デフォルト下限
     private const float K_MAX     = 0.20f;
     private const float K_KNOWN   = 0.95f;
     private const float K_UNKNOWN = 1.10f;
@@ -91,6 +92,18 @@ public class StudyManager : MonoBehaviour
     private const float NR_MIN_H  = 1f;
     private const float NR_MAX_H  = 720f;
     private const float REV_RATIO = 0.7f;
+
+    /// <summary>
+    /// 連続正解数に応じてk値の下限を動的に調整
+    /// 得意な単語ほど復習間隔を広げ、苦手な単語に集中させる
+    /// </summary>
+    private float GetDynamicKMin(int consecutiveCorrect)
+    {
+        if (consecutiveCorrect >= 10) return 0.002f;  // 最長約14日
+        if (consecutiveCorrect >= 6)  return 0.003f;  // 最長約10日
+        if (consecutiveCorrect >= 3)  return 0.005f;  // 最長約6日
+        return K_MIN_BASE;                             // 最長約3日
+    }
 
     // ═══════════════════════════════════════════
     //  内部状態
@@ -144,7 +157,8 @@ public class StudyManager : MonoBehaviour
             if (UserManager.HasUserId())
             {
                 api.SetUserId(UserManager.GetUserId());
-                Debug.Log($"[StudyManager] userId復元: {api.GetUserId()}");
+                abGroup = PlayerPrefs.GetString("AbGroup", "A");
+                Debug.Log($"[StudyManager] userId復元: {api.GetUserId()} group={abGroup}");
                 StartStudy();
             }
             else
@@ -154,6 +168,10 @@ public class StudyManager : MonoBehaviour
                 {
                     if (!success)
                         Debug.LogWarning("[StudyManager] ユーザー登録失敗（オフラインで続行）");
+
+                    // ab_groupを保存
+                    abGroup = PlayerPrefs.GetString("AbGroup", "A");
+                    Debug.Log($"[StudyManager] 新規登録 group={abGroup}");
 
                     StartStudy();
                 });
@@ -294,20 +312,29 @@ public class StudyManager : MonoBehaviour
             uq.strength += isKnown ? STR_DELTA : -STR_DELTA;
             uq.strength = Mathf.Clamp(uq.strength, STR_MIN, STR_MAX);
 
+            // 連続正解数を更新
+            if (isKnown)
+                uq.consecutiveCorrect++;
+            else
+                uq.consecutiveCorrect = 0; // 不正解でリセット
+
+            // 動的K_MIN: 連続正解数に応じて下限を調整
+            float dynamicKMin = GetDynamicKMin(uq.consecutiveCorrect);
+
             uq.kValue *= isKnown ? K_KNOWN : K_UNKNOWN;
-            uq.kValue = Mathf.Clamp(uq.kValue, K_MIN, K_MAX);
+            uq.kValue = Mathf.Clamp(uq.kValue, dynamicKMin, K_MAX);
 
             uq.reviewCount++;
             if (isKnown) uq.knownCount++; else uq.unknownCount++;
 
             uq.lastReviewTicks = now.Ticks;
-            uq.nextReviewTicks = CalcNextReview(uq.strength, uq.kValue, now).Ticks;
+            uq.nextReviewTicks = CalcNextReview(uq.strength, uq.kValue, now, uq.reviewCount).Ticks;
 
             aS = uq.strength;
             aK = uq.kValue;
 
             LogReview(qid, isKnown, bS, aS, bK, aK, now);
-            SendAnswerToApi(qid, isKnown, false, aS, aK, bS, bK);
+            SendAnswerToApi(qid, isKnown, false, aS, aK, bS, bK, uq.reviewCount);
         }
         else
         {
@@ -322,15 +349,16 @@ public class StudyManager : MonoBehaviour
                 reviewCount     = 1,
                 knownCount      = isKnown ? 1 : 0,
                 unknownCount    = isKnown ? 0 : 1,
+                consecutiveCorrect = isKnown ? 1 : 0,
                 lastReviewTicks = now.Ticks,
-                nextReviewTicks = CalcNextReview(s, K_INIT, now).Ticks,
+                nextReviewTicks = CalcNextReview(s, K_INIT, now, 1).Ticks,
                 createdTicks    = now.Ticks,
             };
 
             userQuestions[qid] = newUq;
 
             LogReview(qid, isKnown, 0f, s, 0f, K_INIT, now);
-            SendAnswerToApi(qid, isKnown, true, s, K_INIT, 0f, 0f);
+            SendAnswerToApi(qid, isKnown, true, s, K_INIT, 0f, 0f, 1);
         }
 
         SaveUserData();
@@ -339,7 +367,7 @@ public class StudyManager : MonoBehaviour
 
     /// <summary>API側にも回答を送信（SyncManager経由）</summary>
     private void SendAnswerToApi(int qid, bool isKnown, bool isFirst,
-        float aS, float aK, float bS, float bK)
+        float aS, float aK, float bS, float bK, int reviewCount = 0)
     {
         var req = new ApiManager.AnswerRequest
         {
@@ -353,7 +381,7 @@ public class StudyManager : MonoBehaviour
             after_strength  = aS,
             before_k        = bK,
             after_k         = aK,
-            next_review_at  = CalcNextReviewStr(aS, aK),
+            next_review_at  = CalcNextReviewStr(aS, aK, reviewCount),
         };
 
         // SyncManager経由で送信（失敗時はキューに自動保存）
@@ -368,20 +396,48 @@ public class StudyManager : MonoBehaviour
     //  数式（§4）
     // ═══════════════════════════════════════════
 
-    private DateTime CalcNextReview(float strength, float k, DateTime now)
+    // A/Bテスト: "A"=個別k値, "B"=固定間隔
+    private string abGroup = "A";
+
+    public void SetAbGroup(string group) { abGroup = group; }
+    public string GetAbGroup() { return abGroup; }
+
+    // ── 固定間隔テーブル（グループB用） ──
+    // 復習回数に応じた固定間隔（時間）
+    private static readonly float[] FIXED_INTERVALS = {
+        1f,     // 1回目: 1時間後
+        24f,    // 2回目: 1日後
+        72f,    // 3回目: 3日後
+        168f,   // 4回目: 7日後
+        336f,   // 5回目: 14日後
+        720f,   // 6回目以降: 30日後
+    };
+
+    private DateTime CalcNextReview(float strength, float k, DateTime now, int reviewCount = 0)
     {
         float h;
-        if (strength <= 0.5f)
-            h = NR_MIN_H;
+
+        if (abGroup == "B")
+        {
+            // グループB: 固定間隔（復習回数に応じたテーブル参照）
+            int idx = Mathf.Min(reviewCount, FIXED_INTERVALS.Length - 1);
+            h = FIXED_INTERVALS[idx];
+        }
         else
-            h = Mathf.Clamp((float)(-Math.Log(0.5f / strength) / k), NR_MIN_H, NR_MAX_H);
+        {
+            // グループA: 個別k値（現在のアルゴリズム）
+            if (strength <= 0.5f)
+                h = NR_MIN_H;
+            else
+                h = Mathf.Clamp((float)(-Math.Log(0.5f / strength) / k), NR_MIN_H, NR_MAX_H);
+        }
 
         return now.AddHours(h);
     }
 
-    private string CalcNextReviewStr(float strength, float k)
+    private string CalcNextReviewStr(float strength, float k, int reviewCount = 0)
     {
-        return CalcNextReview(strength, k, DateTime.Now).ToString("yyyy-MM-dd HH:mm:ss");
+        return CalcNextReview(strength, k, DateTime.Now, reviewCount).ToString("yyyy-MM-dd HH:mm:ss");
     }
 
     private void LogReview(int qid, bool isKnown,
